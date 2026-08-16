@@ -1,0 +1,6 @@
+.git
+.github
+bin/app
+tmp
+.env
+README.md
