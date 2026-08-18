@@ -471,3 +471,55 @@ func TestListLinksAcceptRangesHeader(t *testing.T) {
 		t.Errorf("Accept-Ranges = %q, want %q", got, "links")
 	}
 }
+
+func TestCORSPreflight(t *testing.T) {
+	router := newRouter(NewLinksHandler(nil, testBaseURL))
+
+	req := httptest.NewRequest(http.MethodOptions, "/api/links", nil)
+	req.Header.Set("Origin", "http://localhost:5173")
+	req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	req.Header.Set("Access-Control-Request-Headers", "content-type")
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:5173" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want %q", got, "http://localhost:5173")
+	}
+
+	if got := rec.Header().Get("Access-Control-Allow-Methods"); !strings.Contains(got, http.MethodDelete) {
+		t.Errorf("Access-Control-Allow-Methods = %q, must contain %q", got, http.MethodDelete)
+	}
+}
+
+func TestCORSExposesContentRange(t *testing.T) {
+	router := newTestRouter(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/links", nil)
+	req.Header.Set("Origin", "http://localhost:5173")
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Access-Control-Expose-Headers"); !strings.Contains(got, "Content-Range") {
+		t.Errorf("Access-Control-Expose-Headers = %q, must contain %q", got, "Content-Range")
+	}
+}
+
+func TestCORSRejectsUnknownOrigin(t *testing.T) {
+	router := newRouter(NewLinksHandler(nil, testBaseURL))
+
+	req := httptest.NewRequest(http.MethodGet, "/ping", nil)
+	req.Header.Set("Origin", "http://evil.example")
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want empty", got)
+	}
+}

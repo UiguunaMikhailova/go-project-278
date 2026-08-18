@@ -1,0 +1,16 @@
+{
+  "name": "go-project-278",
+  "version": "1.0.0",
+  "description": "Frontend runner for the URL shortener API",
+  "scripts": {
+    "dev": "concurrently -n api,front -c blue,green \"go run .\" \"npx start-hexlet-url-shortener-frontend\"",
+    "frontend": "npx start-hexlet-url-shortener-frontend"
+  },
+  "dependencies": {
+    "@hexlet/project-url-shortener-frontend": "^1.0.0"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.4"
+  },
+  "private": true
+}

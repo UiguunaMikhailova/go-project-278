@@ -5,16 +5,21 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	sentry "github.com/getsentry/sentry-go"
 	sentrygin "github.com/getsentry/sentry-go/gin"
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/joho/godotenv"
 )
 
-const defaultBaseURL = "http://localhost:8080"
+const (
+	defaultBaseURL = "http://localhost:8080"
+	defaultAllowedOrigin = "http://localhost:5173"
+)
 
 func loadEnv() {
 	err := godotenv.Load()
@@ -74,11 +79,36 @@ func baseURL() string {
 	return defaultBaseURL
 }
 
+func allowedOrigins() []string {
+	raw := os.Getenv("CORS_ORIGINS")
+	if raw == "" {
+		return []string{defaultAllowedOrigin}
+	}
+
+	origins := strings.Split(raw, ",")
+	for i, origin := range origins {
+		origins[i] = strings.TrimSpace(origin)
+	}
+
+	return origins
+}
+
 func newRouter(links *LinksHandler) *gin.Engine {
 	router := gin.New()
 
 	router.Use(gin.Logger(), gin.Recovery())
 	router.Use(sentrygin.New(sentrygin.Options{Repanic: true}))
+
+	router.Use(cors.New(cors.Config{
+		AllowOrigins: allowedOrigins(),
+		AllowMethods: []string{
+			http.MethodGet, http.MethodPost, http.MethodPut,
+			http.MethodDelete, http.MethodOptions,
+		},
+		AllowHeaders: []string{"Origin", "Content-Type", "Accept"},
+		ExposeHeaders: []string{"Content-Range", "Accept-Ranges"},
+		MaxAge:        12 * time.Hour,
+	}))
 
 	router.GET("/ping", func(c *gin.Context) {
 		c.String(http.StatusOK, "pong")

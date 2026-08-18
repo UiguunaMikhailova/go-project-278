@@ -22,6 +22,7 @@ cp .env.example .env   # затем подставить свои значени
 `DATABASE_URL` - строка подключения к PostgreSQL
 `TEST_DATABASE_URL` - строка подключения к базе для тестов
 `BASE_URL` - адрес сервиса
+`CORS_ORIGINS` - разрешенные источники для CORS через запятую, по умолчанию `http://localhost:5173`
 
 ## Разработка
 
@@ -29,6 +30,7 @@ cp .env.example .env   # затем подставить свои значени
 make db-up   # поднять PostgreSQL в docker
 make migrate # применить миграции goose
 make run     # запустить приложение на http://localhost:8080
+make dev     # запустить API и веб-интерфейс вместе
 make test    # тесты
 make lint    # golangci-lint
 make check   # тесты + линтер
@@ -67,6 +69,18 @@ curl -X POST http://localhost:8080/api/links \
   -H "Content-Type: application/json" \
   -d '{"original_url": "https://example.com/long-url", "short_name": "exmpl"}'
 ```
+
+## Веб-интерфейс
+
+Интерфейс поставляется npm-пакетом `@hexlet/project-url-shortener-frontend`.
+
+```bash
+npm install          # один раз, поставит фронтенд и concurrently
+make dev             # API на :8080 и интерфейс на http://localhost:5173
+```
+
+Фронтенд проксирует свои запросы `/api` на бэкенд, адрес которого можно
+переопределить переменной `API_URL`.
 
 ## Мониторинг ошибок
 

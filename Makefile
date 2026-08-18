@@ -1,7 +1,11 @@
-.PHONY: run build test lint check generate db-up db-down migrate migrate-down
+.PHONY: run dev build test lint check generate db-up db-down migrate migrate-down
 
 run:
 	go run main.go
+
+# бэкенд и фронтенд одной командой: API на :8080, интерфейс на :5173
+dev:
+	npm run dev
 
 build:
 	go build -o bin/app .
