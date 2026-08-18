@@ -37,10 +37,6 @@ func NewLinkService(database *sql.DB) *LinkService {
 	return &LinkService{queries: db.New(database)}
 }
 
-func (s *LinkService) List(ctx context.Context) ([]db.Link, error) {
-	return s.queries.ListLinks(ctx)
-}
-
 func (s *LinkService) Get(ctx context.Context, id int64) (db.Link, error) {
 	link, err := s.queries.GetLink(ctx, id)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -133,4 +129,14 @@ func generateShortName() (string, error) {
 	}
 
 	return string(name), nil
+}
+
+// ListPage возвращает страницу ссылок: limit записей, пропустив offset первых.
+func (s *LinkService) ListPage(ctx context.Context, offset, limit int32) ([]db.Link, error) {
+	return s.queries.ListLinksPage(ctx, db.ListLinksPageParams{Limit: limit, Offset: offset})
+}
+
+// Count возвращает общее количество ссылок, нужно для заголовка Content-Range.
+func (s *LinkService) Count(ctx context.Context) (int64, error) {
+	return s.queries.CountLinks(ctx)
 }

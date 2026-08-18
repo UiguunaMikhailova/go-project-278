@@ -1,6 +1,3 @@
--- name: ListLinks :many
-SELECT * FROM links ORDER BY id;
-
 -- name: GetLink :one
 SELECT * FROM links WHERE id = $1;
 
@@ -20,3 +17,9 @@ RETURNING *;
 
 -- name: DeleteLink :execrows
 DELETE FROM links WHERE id = $1;
+
+-- name: ListLinksPage :many
+SELECT * FROM links ORDER BY id LIMIT $1 OFFSET $2;
+
+-- name: CountLinks :one
+SELECT count(*) FROM links;

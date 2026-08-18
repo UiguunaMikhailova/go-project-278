@@ -10,6 +10,11 @@ linters:
     - bodyclose
     - misspell
     - revive
+  settings:
+    revive:
+      rules:
+        - name: package-comments
+          disabled: true
 
 formatters:
   enable:

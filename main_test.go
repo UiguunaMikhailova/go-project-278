@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -366,4 +367,107 @@ func TestDeleteLinkNotFound(t *testing.T) {
 
 func itoa(id int64) string {
 	return strconv.FormatInt(id, 10)
+}
+
+// seedLinks создает count ссылок с именами link-1, link-2 и так далее.
+func seedLinks(t *testing.T, router *gin.Engine, count int) {
+	t.Helper()
+
+	for i := 1; i <= count; i++ {
+		createLink(t, router, "https://example.com/"+strconv.Itoa(i), "link-"+strconv.Itoa(i))
+	}
+}
+
+func listWithRange(t *testing.T, router *gin.Engine, rangeParam string) ([]linkResponse, string) {
+	t.Helper()
+
+	path := "/api/links"
+	if rangeParam != "" {
+		path += "?range=" + url.QueryEscape(rangeParam)
+	}
+
+	rec := doRequest(t, router, http.MethodGet, path, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("response code = %d, want %d, body %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var links []linkResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &links); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	return links, rec.Header().Get("Content-Range")
+}
+
+func TestListLinksRange(t *testing.T) {
+	router := newTestRouter(t)
+	seedLinks(t, router, 5)
+
+	cases := []struct {
+		name       string
+		rangeParam string
+		wantIDs    []int64
+		wantHeader string
+	}{
+		{"first page", "[0,2]", []int64{1, 2}, "links 0-2/5"},
+		{"second page", "[2,4]", []int64{3, 4}, "links 2-4/5"},
+		{"tail of the list", "[4,10]", []int64{5}, "links 4-5/5"},
+		{"space after comma", "[1, 3]", []int64{2, 3}, "links 1-3/5"},
+		{"empty range", "[2,2]", nil, "links 2-2/5"},
+		{"beyond the list", "[10,20]", nil, "links 5-5/5"},
+		{"no range param", "", []int64{1, 2, 3, 4, 5}, "links 0-5/5"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			links, header := listWithRange(t, router, tc.rangeParam)
+
+			if header != tc.wantHeader {
+				t.Errorf("Content-Range = %q, want %q", header, tc.wantHeader)
+			}
+
+			if len(links) != len(tc.wantIDs) {
+				t.Fatalf("got %d links, want %d", len(links), len(tc.wantIDs))
+			}
+
+			for i, want := range tc.wantIDs {
+				if links[i].ID != want {
+					t.Errorf("links[%d].id = %d, want %d", i, links[i].ID, want)
+				}
+			}
+		})
+	}
+}
+
+func TestListLinksRangeInvalid(t *testing.T) {
+	router := newTestRouter(t)
+	seedLinks(t, router, 3)
+
+	cases := map[string]string{
+		"single element":   "[5]",
+		"not a number":     "[a,b]",
+		"not an array":     "5",
+		"end before start": "[3,1]",
+		"negative start":   "[-1,2]",
+	}
+
+	for name, rangeParam := range cases {
+		t.Run(name, func(t *testing.T) {
+			rec := doRequest(t, router, http.MethodGet, "/api/links?range="+url.QueryEscape(rangeParam), "")
+
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("response code = %d, want %d", rec.Code, http.StatusBadRequest)
+			}
+		})
+	}
+}
+
+func TestListLinksAcceptRangesHeader(t *testing.T) {
+	router := newTestRouter(t)
+
+	rec := doRequest(t, router, http.MethodGet, "/api/links", "")
+
+	if got := rec.Header().Get("Accept-Ranges"); got != "links" {
+		t.Errorf("Accept-Ranges = %q, want %q", got, "links")
+	}
 }

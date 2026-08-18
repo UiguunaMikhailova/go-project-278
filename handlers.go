@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -24,6 +26,9 @@ type linkResponse struct {
 	ShortURL    string `json:"short_url"`
 }
 
+// единица измерения диапазонов в заголовках Content-Range и Accept-Ranges
+const rangeUnit = "links"
+
 // LinksHandler обслуживает маршруты /api/links.
 type LinksHandler struct {
 	service *LinkService
@@ -45,7 +50,21 @@ func (h *LinksHandler) newResponse(link db.Link) linkResponse {
 }
 
 func (h *LinksHandler) List(c *gin.Context) {
-	links, err := h.service.List(c.Request.Context())
+	ctx := c.Request.Context()
+
+	total, err := h.service.Count(ctx)
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	start, end, err := parseRange(c.Query("range"), total)
+	if err != nil {
+		respondError(c, http.StatusBadRequest, err)
+		return
+	}
+
+	links, err := h.service.ListPage(ctx, int32(start), int32(end-start))
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, err)
 		return
@@ -56,7 +75,36 @@ func (h *LinksHandler) List(c *gin.Context) {
 		responses = append(responses, h.newResponse(link))
 	}
 
+	c.Header("Accept-Ranges", rangeUnit)
+	c.Header("Content-Range", fmt.Sprintf("%s %d-%d/%d", rangeUnit, start, end, total))
 	c.JSON(http.StatusOK, responses)
+}
+
+func parseRange(raw string, total int64) (start, end int64, err error) {
+	if raw == "" {
+		return 0, total, nil
+	}
+
+	var bounds []int64
+	if err := json.Unmarshal([]byte(raw), &bounds); err != nil || len(bounds) != 2 {
+		return 0, 0, errors.New("range must look like [start,end]")
+	}
+
+	start, end = bounds[0], bounds[1]
+
+	if start < 0 || end < start {
+		return 0, 0, errors.New("range bounds must be non-negative and ordered")
+	}
+
+	if end > total {
+		end = total
+	}
+
+	if start > end {
+		start = end
+	}
+
+	return start, end, nil
 }
 
 func (h *LinksHandler) Create(c *gin.Context) {
