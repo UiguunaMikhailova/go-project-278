@@ -20,10 +20,14 @@ cp .env.example .env   # затем подставить свои значени
 `SENTRY_DSN` - DSN проекта в Bugsink/Sentry
 `APP_ENV` - окружение в событиях мониторинга, например `production`
 `DATABASE_URL` - строка подключения к PostgreSQL
+`TEST_DATABASE_URL` - строка подключения к базе для тестов
+`BASE_URL` - адрес сервиса
 
 ## Разработка
 
 ```bash
+make db-up   # поднять PostgreSQL в docker
+make migrate # применить миграции goose
 make run     # запустить приложение на http://localhost:8080
 make test    # тесты
 make lint    # golangci-lint
@@ -36,6 +40,23 @@ make build   # собрать бинарник в bin/app
 ```bash
 curl http://localhost:8080/ping
 # pong
+```
+
+## API
+
+`GET` `/api/links` - 200 список ссылок
+`POST` `/api/links` - 201 созданная ссылка
+`GET` `/api/links/:id` - 200 ссылка - 404 если не найдена
+`PUT` `/api/links/:id` - 200 обновленная ссылка - 404 если не найдена 
+`DELETE` `/api/links/:id` - 204 без тела - 404 если не найдена
+
+Поле `short_name` можно не передавать - сервер сгенерирует уникальное имя сам.
+Если имя занято, ответ будет 409 Conflict.
+
+```bash
+curl -X POST http://localhost:8080/api/links \
+  -H "Content-Type: application/json" \
+  -d '{"original_url": "https://example.com/long-url", "short_name": "exmpl"}'
 ```
 
 ## Мониторинг ошибок

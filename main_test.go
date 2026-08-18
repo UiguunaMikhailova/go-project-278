@@ -1,28 +1,369 @@
 package main
 
 import (
+	"bytes"
+	"database/sql"
+	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/joho/godotenv"
+	"github.com/pressly/goose/v3"
 )
 
-func TestPing(t *testing.T) {
+const testBaseURL = "https://short.test"
+
+// testDB заполняется в TestMain, если задан TEST_DATABASE_URL.
+var testDB *sql.DB
+
+func TestMain(m *testing.M) {
 	gin.SetMode(gin.TestMode)
+	_ = godotenv.Load()
 
-	router := newRouter()
+	if databaseURL := os.Getenv("TEST_DATABASE_URL"); databaseURL != "" {
+		database, err := openDB(databaseURL)
+		if err != nil {
+			log.Fatalf("failed to connect to test database: %v", err)
+		}
 
-	req := httptest.NewRequest(http.MethodGet, "/ping", nil)
+		if err := goose.SetDialect("postgres"); err != nil {
+			log.Fatalf("failed to set migration dialect: %v", err)
+		}
+
+		if err := goose.Up(database, "db/migrations"); err != nil {
+			log.Fatalf("failed to apply migrations: %v", err)
+		}
+
+		testDB = database
+	}
+
+	os.Exit(m.Run())
+}
+
+// newTestRouter поднимает роутер на чистой таблице links.
+func newTestRouter(t *testing.T) *gin.Engine {
+	t.Helper()
+
+	if testDB == nil {
+		t.Skip("TEST_DATABASE_URL is not set, database tests are skipped")
+	}
+
+	if _, err := testDB.Exec("TRUNCATE links RESTART IDENTITY"); err != nil {
+		t.Fatalf("failed to truncate table: %v", err)
+	}
+
+	return newRouter(NewLinksHandler(NewLinkService(testDB), testBaseURL))
+}
+
+func doRequest(t *testing.T, router *gin.Engine, method, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	var reader *bytes.Reader
+	if body == "" {
+		reader = bytes.NewReader(nil)
+	} else {
+		reader = bytes.NewReader([]byte(body))
+	}
+
+	req := httptest.NewRequest(method, path, reader)
+	req.Header.Set("Content-Type", "application/json")
+
 	rec := httptest.NewRecorder()
-
 	router.ServeHTTP(rec, req)
 
+	return rec
+}
+
+func decodeLink(t *testing.T, rec *httptest.ResponseRecorder) linkResponse {
+	t.Helper()
+
+	var link linkResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &link); err != nil {
+		t.Fatalf("failed to decode response %q: %v", rec.Body.String(), err)
+	}
+
+	return link
+}
+
+// createLink создает ссылку через API и возвращает ее.
+func createLink(t *testing.T, router *gin.Engine, originalURL, shortName string) linkResponse {
+	t.Helper()
+
+	body := `{"original_url":"` + originalURL + `","short_name":"` + shortName + `"}`
+
+	rec := doRequest(t, router, http.MethodPost, "/api/links", body)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create link: code %d, body %s", rec.Code, rec.Body.String())
+	}
+
+	return decodeLink(t, rec)
+}
+
+func TestPing(t *testing.T) {
+	router := newRouter(NewLinksHandler(nil, testBaseURL))
+
+	rec := doRequest(t, router, http.MethodGet, "/ping", "")
+
 	if rec.Code != http.StatusOK {
-		t.Errorf("код ответа = %d, ожидался %d", rec.Code, http.StatusOK)
+		t.Errorf("response code = %d, want %d", rec.Code, http.StatusOK)
 	}
 
 	if body := rec.Body.String(); body != "pong" {
-		t.Errorf("тело ответа = %q, ожидалось %q", body, "pong")
+		t.Errorf("response body = %q, want %q", body, "pong")
 	}
+}
+
+func TestCreateLink(t *testing.T) {
+	router := newTestRouter(t)
+
+	rec := doRequest(t, router, http.MethodPost, "/api/links",
+		`{"original_url":"https://example.com/long-url","short_name":"exmpl"}`)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("response code = %d, want %d, body %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	link := decodeLink(t, rec)
+
+	if link.ID == 0 {
+		t.Error("id is empty")
+	}
+
+	if link.OriginalURL != "https://example.com/long-url" {
+		t.Errorf("original_url = %q", link.OriginalURL)
+	}
+
+	if link.ShortName != "exmpl" {
+		t.Errorf("short_name = %q, want %q", link.ShortName, "exmpl")
+	}
+
+	if want := testBaseURL + "/r/exmpl"; link.ShortURL != want {
+		t.Errorf("short_url = %q, want %q", link.ShortURL, want)
+	}
+}
+
+func TestCreateLinkGeneratesShortName(t *testing.T) {
+	router := newTestRouter(t)
+
+	rec := doRequest(t, router, http.MethodPost, "/api/links",
+		`{"original_url":"https://example.com/long-url"}`)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("response code = %d, want %d, body %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	link := decodeLink(t, rec)
+
+	if link.ShortName == "" {
+		t.Fatal("short name was not generated")
+	}
+
+	if !strings.HasSuffix(link.ShortURL, "/r/"+link.ShortName) {
+		t.Errorf("short_url = %q does not contain short name %q", link.ShortURL, link.ShortName)
+	}
+}
+
+func TestCreateLinkDuplicateShortName(t *testing.T) {
+	router := newTestRouter(t)
+
+	createLink(t, router, "https://example.com/first", "exmpl")
+
+	rec := doRequest(t, router, http.MethodPost, "/api/links",
+		`{"original_url":"https://example.com/second","short_name":"exmpl"}`)
+
+	if rec.Code != http.StatusConflict {
+		t.Errorf("response code = %d, want %d", rec.Code, http.StatusConflict)
+	}
+}
+
+func TestCreateLinkValidation(t *testing.T) {
+	router := newTestRouter(t)
+
+	cases := map[string]string{
+		"without original_url": `{"short_name":"exmpl"}`,
+		"invalid url":          `{"original_url":"not a url"}`,
+		"broken json":          `{"original_url":`,
+	}
+
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			rec := doRequest(t, router, http.MethodPost, "/api/links", body)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("response code = %d, want %d", rec.Code, http.StatusBadRequest)
+			}
+		})
+	}
+}
+
+func TestListLinks(t *testing.T) {
+	router := newTestRouter(t)
+
+	createLink(t, router, "https://example.com/first", "first")
+	createLink(t, router, "https://example.com/second", "second")
+
+	rec := doRequest(t, router, http.MethodGet, "/api/links", "")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("response code = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var links []linkResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &links); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if len(links) != 2 {
+		t.Fatalf("got %d links, want 2", len(links))
+	}
+
+	if links[0].ShortName != "first" || links[1].ShortName != "second" {
+		t.Errorf("unexpected order: %q, %q", links[0].ShortName, links[1].ShortName)
+	}
+}
+
+func TestListLinksEmpty(t *testing.T) {
+	router := newTestRouter(t)
+
+	rec := doRequest(t, router, http.MethodGet, "/api/links", "")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("response code = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	// пустой список должен быть [], а не null
+	if body := strings.TrimSpace(rec.Body.String()); body != "[]" {
+		t.Errorf("response body = %q, want %q", body, "[]")
+	}
+}
+
+func TestGetLink(t *testing.T) {
+	router := newTestRouter(t)
+
+	created := createLink(t, router, "https://example.com/long-url", "exmpl")
+
+	rec := doRequest(t, router, http.MethodGet, "/api/links/"+itoa(created.ID), "")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("response code = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	link := decodeLink(t, rec)
+
+	if link.ID != created.ID || link.ShortName != "exmpl" {
+		t.Errorf("got link %+v, want %+v", link, created)
+	}
+}
+
+func TestGetLinkNotFound(t *testing.T) {
+	router := newTestRouter(t)
+
+	rec := doRequest(t, router, http.MethodGet, "/api/links/999999", "")
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("response code = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestGetLinkInvalidID(t *testing.T) {
+	router := newTestRouter(t)
+
+	rec := doRequest(t, router, http.MethodGet, "/api/links/abc", "")
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("response code = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestUpdateLink(t *testing.T) {
+	router := newTestRouter(t)
+
+	created := createLink(t, router, "https://example.com/long-url", "exmpl")
+
+	rec := doRequest(t, router, http.MethodPut, "/api/links/"+itoa(created.ID),
+		`{"original_url":"https://example.com/updated","short_name":"updtd"}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("response code = %d, want %d, body %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	link := decodeLink(t, rec)
+
+	if link.OriginalURL != "https://example.com/updated" {
+		t.Errorf("original_url = %q", link.OriginalURL)
+	}
+
+	if link.ShortName != "updtd" {
+		t.Errorf("short_name = %q, want %q", link.ShortName, "updtd")
+	}
+
+	if want := testBaseURL + "/r/updtd"; link.ShortURL != want {
+		t.Errorf("short_url = %q, want %q", link.ShortURL, want)
+	}
+}
+
+func TestUpdateLinkNotFound(t *testing.T) {
+	router := newTestRouter(t)
+
+	rec := doRequest(t, router, http.MethodPut, "/api/links/999999",
+		`{"original_url":"https://example.com/updated","short_name":"updtd"}`)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("response code = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestUpdateLinkDuplicateShortName(t *testing.T) {
+	router := newTestRouter(t)
+
+	createLink(t, router, "https://example.com/first", "first")
+	second := createLink(t, router, "https://example.com/second", "second")
+
+	rec := doRequest(t, router, http.MethodPut, "/api/links/"+itoa(second.ID),
+		`{"original_url":"https://example.com/second","short_name":"first"}`)
+
+	if rec.Code != http.StatusConflict {
+		t.Errorf("response code = %d, want %d", rec.Code, http.StatusConflict)
+	}
+}
+
+func TestDeleteLink(t *testing.T) {
+	router := newTestRouter(t)
+
+	created := createLink(t, router, "https://example.com/long-url", "exmpl")
+
+	rec := doRequest(t, router, http.MethodDelete, "/api/links/"+itoa(created.ID), "")
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+
+	if body := rec.Body.String(); body != "" {
+		t.Errorf("response body = %q, want empty", body)
+	}
+
+	after := doRequest(t, router, http.MethodGet, "/api/links/"+itoa(created.ID), "")
+	if after.Code != http.StatusNotFound {
+		t.Errorf("code after delete = %d, want %d", after.Code, http.StatusNotFound)
+	}
+}
+
+func TestDeleteLinkNotFound(t *testing.T) {
+	router := newTestRouter(t)
+
+	rec := doRequest(t, router, http.MethodDelete, "/api/links/999999", "")
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("response code = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func itoa(id int64) string {
+	return strconv.FormatInt(id, 10)
 }
