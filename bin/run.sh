@@ -10,5 +10,9 @@ else
   echo "[run.sh] DATABASE_URL is not set, skipping migrations"
 fi
 
+echo "[run.sh] Starting Caddy"
+caddy run --config /etc/caddy/Caddyfile &
+
 echo "[run.sh] Starting Go app"
-exec /app/bin/app
+# на :80 слушает Caddy, приложение всегда занимает 8080 из Caddyfile
+exec env PORT=8080 /app/bin/app

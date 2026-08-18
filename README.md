@@ -93,7 +93,13 @@ curl -i http://localhost:8080/debug/sentry   # 500, событие уходит 
 
 ## Docker
 
+В образе фронтенд и бэкенд работают вместе: Caddy слушает 80, раздает статику
+из `/app/public` и проксирует остальные запросы в приложение на 8080.
+
 ```bash
 docker build --platform linux/amd64 -t go-project-278 .
-docker run --rm --platform linux/amd64 -p 8080:8080 -e PORT=8080 go-project-278
+docker run --rm --platform linux/amd64 -p 8090:80 \
+  -e DATABASE_URL="postgres://postgres:password@host.docker.internal:5432/appdb?sslmode=disable" \
+  go-project-278
+# интерфейс на http://localhost:8090
 ```

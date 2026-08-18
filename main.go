@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	defaultBaseURL = "http://localhost:8080"
+	defaultBaseURL       = "http://localhost:8080"
 	defaultAllowedOrigin = "http://localhost:5173"
 )
 
@@ -105,7 +105,7 @@ func newRouter(links *LinksHandler) *gin.Engine {
 			http.MethodGet, http.MethodPost, http.MethodPut,
 			http.MethodDelete, http.MethodOptions,
 		},
-		AllowHeaders: []string{"Origin", "Content-Type", "Accept"},
+		AllowHeaders:  []string{"Origin", "Content-Type", "Accept"},
 		ExposeHeaders: []string{"Content-Range", "Accept-Ranges"},
 		MaxAge:        12 * time.Hour,
 	}))

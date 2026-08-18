@@ -4,3 +4,4 @@ bin/app
 tmp
 .env
 README.md
+node_modules
