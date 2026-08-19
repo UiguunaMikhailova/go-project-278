@@ -140,3 +140,27 @@ func (s *LinkService) ListPage(ctx context.Context, offset, limit int32) ([]db.L
 func (s *LinkService) Count(ctx context.Context) (int64, error) {
 	return s.queries.CountLinks(ctx)
 }
+
+// GetByShortName ищет ссылку по короткому имени, нужно для редиректа.
+func (s *LinkService) GetByShortName(ctx context.Context, shortName string) (db.Link, error) {
+	link, err := s.queries.GetLinkByShortName(ctx, shortName)
+	if errors.Is(err, sql.ErrNoRows) {
+		return db.Link{}, ErrLinkNotFound
+	}
+
+	return link, err
+}
+
+// RecordVisit сохраняет факт перехода по короткой ссылке.
+func (s *LinkService) RecordVisit(ctx context.Context, visit db.CreateLinkVisitParams) (db.LinkVisit, error) {
+	return s.queries.CreateLinkVisit(ctx, visit)
+}
+
+// ListVisitsPage возвращает страницу посещений: limit записей, пропустив offset первых.
+func (s *LinkService) ListVisitsPage(ctx context.Context, offset, limit int32) ([]db.LinkVisit, error) {
+	return s.queries.ListLinkVisitsPage(ctx, db.ListLinkVisitsPageParams{Limit: limit, Offset: offset})
+}
+
+func (s *LinkService) CountVisits(ctx context.Context) (int64, error) {
+	return s.queries.CountLinkVisits(ctx)
+}

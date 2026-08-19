@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -18,6 +20,17 @@ type linkRequest struct {
 	ShortName   string `json:"short_name"`
 }
 
+// visitResponse - представление посещения в ответах API.
+type visitResponse struct {
+	ID        int64     `json:"id"`
+	LinkID    int64     `json:"link_id"`
+	CreatedAt time.Time `json:"created_at"`
+	IP        string    `json:"ip"`
+	UserAgent string    `json:"user_agent"`
+	Referer   string    `json:"referer"`
+	Status    int32     `json:"status"`
+}
+
 // linkResponse - представление ссылки в ответах API.
 type linkResponse struct {
 	ID          int64  `json:"id"`
@@ -26,8 +39,14 @@ type linkResponse struct {
 	ShortURL    string `json:"short_url"`
 }
 
-// единица измерения диапазонов в заголовках Content-Range и Accept-Ranges
-const rangeUnit = "links"
+// единицы измерения диапазонов в заголовках Content-Range и Accept-Ranges
+const (
+	linksRangeUnit  = "links"
+	visitsRangeUnit = "link_visits"
+)
+
+// код перенаправления с короткой ссылки на исходный адрес
+const redirectStatus = http.StatusFound
 
 // LinksHandler обслуживает маршруты /api/links.
 type LinksHandler struct {
@@ -58,7 +77,7 @@ func (h *LinksHandler) List(c *gin.Context) {
 		return
 	}
 
-	start, end, err := parseRange(c.Query("range"), total)
+	start, end, err := parseRange(requestedRange(c), total)
 	if err != nil {
 		respondError(c, http.StatusBadRequest, err)
 		return
@@ -75,9 +94,86 @@ func (h *LinksHandler) List(c *gin.Context) {
 		responses = append(responses, h.newResponse(link))
 	}
 
-	c.Header("Accept-Ranges", rangeUnit)
-	c.Header("Content-Range", fmt.Sprintf("%s %d-%d/%d", rangeUnit, start, end, total))
+	writeRangeHeaders(c, linksRangeUnit, start, end, total)
 	c.JSON(http.StatusOK, responses)
+}
+
+// ListVisits отдает список посещений с той же пагинацией, что и список ссылок.
+func (h *LinksHandler) ListVisits(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	total, err := h.service.CountVisits(ctx)
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	start, end, err := parseRange(requestedRange(c), total)
+	if err != nil {
+		respondError(c, http.StatusBadRequest, err)
+		return
+	}
+
+	visits, err := h.service.ListVisitsPage(ctx, int32(start), int32(end-start))
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	responses := make([]visitResponse, 0, len(visits))
+	for _, visit := range visits {
+		responses = append(responses, visitResponse{
+			ID:        visit.ID,
+			LinkID:    visit.LinkID,
+			CreatedAt: visit.CreatedAt,
+			IP:        visit.Ip,
+			UserAgent: visit.UserAgent,
+			Referer:   visit.Referer,
+			Status:    visit.Status,
+		})
+	}
+
+	writeRangeHeaders(c, visitsRangeUnit, start, end, total)
+	c.JSON(http.StatusOK, responses)
+}
+
+// Redirect перенаправляет с короткой ссылки на исходный адрес и записывает посещение.
+func (h *LinksHandler) Redirect(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	link, err := h.service.GetByShortName(ctx, c.Param("code"))
+	if err != nil {
+		respondServiceError(c, err)
+		return
+	}
+
+	// статистика не должна мешать переходу, поэтому ошибку записи только логируем
+	_, err = h.service.RecordVisit(ctx, db.CreateLinkVisitParams{
+		LinkID:    link.ID,
+		Ip:        c.ClientIP(),
+		UserAgent: c.Request.UserAgent(),
+		Referer:   c.Request.Referer(),
+		Status:    redirectStatus,
+	})
+	if err != nil {
+		log.Printf("failed to record visit for link %d: %v", link.ID, err)
+	}
+
+	c.Redirect(redirectStatus, link.OriginalUrl)
+}
+
+func writeRangeHeaders(c *gin.Context, unit string, start, end, total int64) {
+	c.Header("Accept-Ranges", unit)
+	c.Header("Content-Range", fmt.Sprintf("%s %d-%d/%d", unit, start, end, total))
+}
+
+// requestedRange читает диапазон из query-параметра, а если его нет - из заголовка Range.
+func requestedRange(c *gin.Context) string {
+	if raw := c.Query("range"); raw != "" {
+		return raw
+	}
+
+	return c.GetHeader("Range")
 }
 
 func parseRange(raw string, total int64) (start, end int64, err error) {

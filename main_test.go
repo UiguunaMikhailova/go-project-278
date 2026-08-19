@@ -55,7 +55,7 @@ func newTestRouter(t *testing.T) *gin.Engine {
 		t.Skip("TEST_DATABASE_URL is not set, database tests are skipped")
 	}
 
-	if _, err := testDB.Exec("TRUNCATE links RESTART IDENTITY"); err != nil {
+	if _, err := testDB.Exec("TRUNCATE link_visits, links RESTART IDENTITY"); err != nil {
 		t.Fatalf("failed to truncate table: %v", err)
 	}
 
@@ -521,5 +521,177 @@ func TestCORSRejectsUnknownOrigin(t *testing.T) {
 
 	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
 		t.Errorf("Access-Control-Allow-Origin = %q, want empty", got)
+	}
+}
+
+// doRedirect делает запрос на короткую ссылку без автоматического перехода.
+func doRedirect(t *testing.T, router *gin.Engine, code string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	req := httptest.NewRequest(http.MethodGet, "/r/"+code, nil)
+	req.Header.Set("User-Agent", "curl/8.7.1")
+	req.Header.Set("Referer", "https://example.com/from")
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	return rec
+}
+
+func decodeVisits(t *testing.T, rec *httptest.ResponseRecorder) []visitResponse {
+	t.Helper()
+
+	var visits []visitResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &visits); err != nil {
+		t.Fatalf("failed to decode response %q: %v", rec.Body.String(), err)
+	}
+
+	return visits
+}
+
+func TestRedirect(t *testing.T) {
+	router := newTestRouter(t)
+	createLink(t, router, "https://example.com/long-url", "exmpl")
+
+	rec := doRedirect(t, router, "exmpl")
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("response code = %d, want %d", rec.Code, http.StatusFound)
+	}
+
+	if got := rec.Header().Get("Location"); got != "https://example.com/long-url" {
+		t.Errorf("Location = %q, want %q", got, "https://example.com/long-url")
+	}
+}
+
+func TestRedirectNotFound(t *testing.T) {
+	router := newTestRouter(t)
+
+	rec := doRedirect(t, router, "missing")
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("response code = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestRedirectRecordsVisit(t *testing.T) {
+	router := newTestRouter(t)
+	link := createLink(t, router, "https://example.com/long-url", "exmpl")
+
+	doRedirect(t, router, "exmpl")
+
+	rec := doRequest(t, router, http.MethodGet, "/api/link_visits", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("response code = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	visits := decodeVisits(t, rec)
+
+	if len(visits) != 1 {
+		t.Fatalf("got %d visits, want 1", len(visits))
+	}
+
+	visit := visits[0]
+
+	if visit.LinkID != link.ID {
+		t.Errorf("link_id = %d, want %d", visit.LinkID, link.ID)
+	}
+
+	if visit.Status != http.StatusFound {
+		t.Errorf("status = %d, want %d", visit.Status, http.StatusFound)
+	}
+
+	if visit.UserAgent != "curl/8.7.1" {
+		t.Errorf("user_agent = %q, want %q", visit.UserAgent, "curl/8.7.1")
+	}
+
+	if visit.Referer != "https://example.com/from" {
+		t.Errorf("referer = %q, want %q", visit.Referer, "https://example.com/from")
+	}
+
+	if visit.IP == "" {
+		t.Error("ip is empty")
+	}
+
+	if visit.CreatedAt.IsZero() {
+		t.Error("created_at is empty")
+	}
+}
+
+func TestRedirectNotFoundDoesNotRecordVisit(t *testing.T) {
+	router := newTestRouter(t)
+
+	doRedirect(t, router, "missing")
+
+	visits := decodeVisits(t, doRequest(t, router, http.MethodGet, "/api/link_visits", ""))
+
+	if len(visits) != 0 {
+		t.Errorf("got %d visits, want 0", len(visits))
+	}
+}
+
+func TestListVisitsRange(t *testing.T) {
+	router := newTestRouter(t)
+	createLink(t, router, "https://example.com/long-url", "exmpl")
+
+	for i := 0; i < 3; i++ {
+		doRedirect(t, router, "exmpl")
+	}
+
+	rec := doRequest(t, router, http.MethodGet, "/api/link_visits?range="+url.QueryEscape("[1,3]"), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("response code = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	if got := rec.Header().Get("Content-Range"); got != "link_visits 1-3/3" {
+		t.Errorf("Content-Range = %q, want %q", got, "link_visits 1-3/3")
+	}
+
+	visits := decodeVisits(t, rec)
+
+	if len(visits) != 2 {
+		t.Fatalf("got %d visits, want 2", len(visits))
+	}
+
+	if visits[0].ID != 2 || visits[1].ID != 3 {
+		t.Errorf("got ids %d, %d, want 2, 3", visits[0].ID, visits[1].ID)
+	}
+}
+
+func TestListVisitsRangeFromHeader(t *testing.T) {
+	router := newTestRouter(t)
+	createLink(t, router, "https://example.com/long-url", "exmpl")
+	doRedirect(t, router, "exmpl")
+	doRedirect(t, router, "exmpl")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/link_visits", nil)
+	req.Header.Set("Range", "[0,1]")
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Content-Range"); got != "link_visits 0-1/2" {
+		t.Errorf("Content-Range = %q, want %q", got, "link_visits 0-1/2")
+	}
+
+	if visits := decodeVisits(t, rec); len(visits) != 1 {
+		t.Errorf("got %d visits, want 1", len(visits))
+	}
+}
+
+func TestDeleteLinkRemovesVisits(t *testing.T) {
+	router := newTestRouter(t)
+	link := createLink(t, router, "https://example.com/long-url", "exmpl")
+	doRedirect(t, router, "exmpl")
+
+	rec := doRequest(t, router, http.MethodDelete, "/api/links/"+itoa(link.ID), "")
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+
+	visits := decodeVisits(t, doRequest(t, router, http.MethodGet, "/api/link_visits", ""))
+
+	if len(visits) != 0 {
+		t.Errorf("got %d visits after link delete, want 0", len(visits))
 	}
 }

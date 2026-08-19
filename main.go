@@ -95,6 +95,7 @@ func allowedOrigins() []string {
 
 func newRouter(links *LinksHandler) *gin.Engine {
 	router := gin.New()
+	router.TrustedPlatform = gin.PlatformCloudflare
 
 	router.Use(gin.Logger(), gin.Recovery())
 	router.Use(sentrygin.New(sentrygin.Options{Repanic: true}))
@@ -118,6 +119,8 @@ func newRouter(links *LinksHandler) *gin.Engine {
 		panic("test error for monitoring check")
 	})
 
+	router.GET("/r/:code", links.Redirect)
+
 	api := router.Group("/api/links")
 	{
 		api.GET("", links.List)
@@ -126,6 +129,8 @@ func newRouter(links *LinksHandler) *gin.Engine {
 		api.PUT("/:id", links.Update)
 		api.DELETE("/:id", links.Delete)
 	}
+
+	router.GET("/api/link_visits", links.ListVisits)
 
 	router.NoRoute(func(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "route not found"})
