@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"reflect"
 	"strings"
 	"time"
 
@@ -12,6 +13,8 @@ import (
 	sentrygin "github.com/getsentry/sentry-go/gin"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
+	"github.com/go-playground/validator/v10"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/joho/godotenv"
 )
@@ -93,7 +96,25 @@ func allowedOrigins() []string {
 	return origins
 }
 
+func registerValidation() {
+	engine, ok := binding.Validator.Engine().(*validator.Validate)
+	if !ok {
+		return
+	}
+
+	engine.RegisterTagNameFunc(func(field reflect.StructField) string {
+		name := strings.SplitN(field.Tag.Get("json"), ",", 2)[0]
+		if name == "-" {
+			return ""
+		}
+
+		return name
+	})
+}
+
 func newRouter(links *LinksHandler) *gin.Engine {
+	registerValidation()
+
 	router := gin.New()
 	router.TrustedPlatform = gin.PlatformCloudflare
 

@@ -106,6 +106,21 @@ func createLink(t *testing.T, router *gin.Engine, originalURL, shortName string)
 	return decodeLink(t, rec)
 }
 
+// fieldErrors разбирает тело вида {"errors": {"<поле>": "<сообщение>"}}.
+func fieldErrors(t *testing.T, rec *httptest.ResponseRecorder) map[string]string {
+	t.Helper()
+
+	var body struct {
+		Errors map[string]string `json:"errors"`
+	}
+
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed to decode response %q: %v", rec.Body.String(), err)
+	}
+
+	return body.Errors
+}
+
 func TestPing(t *testing.T) {
 	router := newRouter(NewLinksHandler(nil, testBaseURL))
 
@@ -178,28 +193,84 @@ func TestCreateLinkDuplicateShortName(t *testing.T) {
 	rec := doRequest(t, router, http.MethodPost, "/api/links",
 		`{"original_url":"https://example.com/second","short_name":"exmpl"}`)
 
-	if rec.Code != http.StatusConflict {
-		t.Errorf("response code = %d, want %d", rec.Code, http.StatusConflict)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("response code = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
+	}
+
+	if got := fieldErrors(t, rec)["short_name"]; got != "short name already in use" {
+		t.Errorf("errors.short_name = %q, want %q", got, "short name already in use")
 	}
 }
 
 func TestCreateLinkValidation(t *testing.T) {
 	router := newTestRouter(t)
 
-	cases := map[string]string{
-		"without original_url": `{"short_name":"exmpl"}`,
-		"invalid url":          `{"original_url":"not a url"}`,
-		"broken json":          `{"original_url":`,
+	cases := map[string]struct {
+		body  string
+		field string
+	}{
+		"without original_url": {`{"short_name":"exmpl"}`, "original_url"},
+		"invalid url":          {`{"original_url":"not a url"}`, "original_url"},
+		"short name too short": {`{"original_url":"https://example.com","short_name":"ab"}`, "short_name"},
+		"short name too long": {
+			`{"original_url":"https://example.com","short_name":"` + strings.Repeat("a", 33) + `"}`,
+			"short_name",
+		},
 	}
 
-	for name, body := range cases {
+	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			rec := doRequest(t, router, http.MethodPost, "/api/links", body)
+			rec := doRequest(t, router, http.MethodPost, "/api/links", tc.body)
 
-			if rec.Code != http.StatusBadRequest {
-				t.Errorf("response code = %d, want %d", rec.Code, http.StatusBadRequest)
+			if rec.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("response code = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
+			}
+
+			if message := fieldErrors(t, rec)[tc.field]; message == "" {
+				t.Errorf("no message for field %q, body %s", tc.field, rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestCreateLinkBrokenJSON(t *testing.T) {
+	router := newTestRouter(t)
+
+	rec := doRequest(t, router, http.MethodPost, "/api/links", `{"original_url":`)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("response code = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed to decode response %q: %v", rec.Body.String(), err)
+	}
+
+	if body.Error != "invalid request" {
+		t.Errorf("error = %q, want %q", body.Error, "invalid request")
+	}
+}
+
+func TestUpdateLinkValidation(t *testing.T) {
+	router := newTestRouter(t)
+	link := createLink(t, router, "https://example.com/long-url", "exmpl")
+
+	rec := doRequest(t, router, http.MethodPut, "/api/links/"+itoa(link.ID),
+		`{"original_url":"not a url","short_name":"ok"}`)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("response code = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
+	}
+
+	fields := fieldErrors(t, rec)
+
+	for _, field := range []string{"original_url", "short_name"} {
+		if fields[field] == "" {
+			t.Errorf("no message for field %q, body %s", field, rec.Body.String())
+		}
 	}
 }
 
@@ -329,8 +400,12 @@ func TestUpdateLinkDuplicateShortName(t *testing.T) {
 	rec := doRequest(t, router, http.MethodPut, "/api/links/"+itoa(second.ID),
 		`{"original_url":"https://example.com/second","short_name":"first"}`)
 
-	if rec.Code != http.StatusConflict {
-		t.Errorf("response code = %d, want %d", rec.Code, http.StatusConflict)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("response code = %d, want %d", rec.Code, http.StatusUnprocessableEntity)
+	}
+
+	if got := fieldErrors(t, rec)["short_name"]; got != "short name already in use" {
+		t.Errorf("errors.short_name = %q, want %q", got, "short name already in use")
 	}
 }
 

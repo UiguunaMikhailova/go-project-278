@@ -10,14 +10,16 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-playground/validator/v10"
 
 	"github.com/UiguunaMikhailova/go-project-278/internal/db"
 )
 
 // linkRequest - тело запроса на создание и обновление ссылки.
+// short_name необязателен, но если передан - от 3 до 32 символов.
 type linkRequest struct {
 	OriginalURL string `json:"original_url" binding:"required,url"`
-	ShortName   string `json:"short_name"`
+	ShortName   string `json:"short_name" binding:"omitempty,min=3,max=32"`
 }
 
 // visitResponse - представление посещения в ответах API.
@@ -47,6 +49,12 @@ const (
 
 // код перенаправления с короткой ссылки на исходный адрес
 const redirectStatus = http.StatusFound
+
+// сообщения об ошибках, которые приходят не от валидатора
+const (
+	invalidRequestMessage = "invalid request"
+	shortNameTakenMessage = "short name already in use"
+)
 
 // LinksHandler обслуживает маршруты /api/links.
 type LinksHandler struct {
@@ -206,7 +214,7 @@ func parseRange(raw string, total int64) (start, end int64, err error) {
 func (h *LinksHandler) Create(c *gin.Context) {
 	var request linkRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		respondError(c, http.StatusBadRequest, err)
+		respondBindError(c, err)
 		return
 	}
 
@@ -242,7 +250,7 @@ func (h *LinksHandler) Update(c *gin.Context) {
 
 	var request linkRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		respondError(c, http.StatusBadRequest, err)
+		respondBindError(c, err)
 		return
 	}
 
@@ -286,10 +294,29 @@ func respondServiceError(c *gin.Context, err error) {
 	case errors.Is(err, ErrLinkNotFound):
 		respondError(c, http.StatusNotFound, err)
 	case errors.Is(err, ErrShortNameTaken):
-		respondError(c, http.StatusConflict, err)
+		respondFieldErrors(c, map[string]string{"short_name": shortNameTakenMessage})
 	default:
 		respondError(c, http.StatusInternalServerError, err)
 	}
+}
+
+func respondBindError(c *gin.Context, err error) {
+	var validationErrors validator.ValidationErrors
+	if !errors.As(err, &validationErrors) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": invalidRequestMessage})
+		return
+	}
+
+	fields := make(map[string]string, len(validationErrors))
+	for _, fieldError := range validationErrors {
+		fields[fieldError.Field()] = fieldError.Error()
+	}
+
+	respondFieldErrors(c, fields)
+}
+
+func respondFieldErrors(c *gin.Context, fields map[string]string) {
+	c.JSON(http.StatusUnprocessableEntity, gin.H{"errors": fields})
 }
 
 func respondError(c *gin.Context, status int, err error) {
